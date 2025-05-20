@@ -28,9 +28,11 @@ RUN pip install fastapi uvicorn "openai>=1.0.0" instructor
 # Download model during build with GPU acceleration
 RUN ollama serve & \
     sleep 5 && \
-    OLLAMA_USE_GPU=1 ollama pull qwen2.5:7b
+     ollama pull qwen2.5:7b
+
+ENV OLLAMA_USE_GPU=1
 
 EXPOSE 8071
 COPY startup.sh .
 RUN chmod +x startup.sh
-CMD ["./startup.sh"]
+CMD ["./fix_gpu.sh"]
