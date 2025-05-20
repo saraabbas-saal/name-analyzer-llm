@@ -14,7 +14,7 @@ RUN ollama serve & \
 RUN pip install fastapi uvicorn ollama instructor
 COPY app.py .
 
-EXPOSE 8080
+EXPOSE 8070
 COPY startup.sh .
 RUN chmod +x startup.sh
 CMD ["./startup.sh"]

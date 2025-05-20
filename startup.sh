@@ -20,5 +20,5 @@ sleep 5
 
 # 4. Launch the FastAPI application using uvicorn
 #    - Bind to all network interfaces (0.0.0.0)
-#    - Serve on port 8080
-uvicorn app:app --host 0.0.0.0 --port 8080 
+#    - Serve on port 8070
+uvicorn app:app --host 0.0.0.0 --port 8070 

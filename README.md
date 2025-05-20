@@ -22,12 +22,12 @@ docker build -t name_analyzer_lastest .
 
 ## Run the service
 ```bash
-docker run -it -p 8080:8080 name_analyzer_lastest:latest bash startup.sh
+docker run -it -p 8070:8070 name_analyzer_lastest:latest bash startup.sh
 ```
 
 ## Send a request
 ```bash
-curl -X GET "http://localhost:8080/name_analyzer?name=Sara%20Abbas"
+curl -X GET "http://localhost:8070/name_analyzer?name=Sara%20Abbas"
 ```
 
 ### Expected output
