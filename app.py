@@ -6,7 +6,10 @@ from pydantic import BaseModel, Field
 import instructor
 from openai import OpenAI
 import json 
+import os
 
+# Set environment variable for GPU usage
+os.environ["OLLAMA_USE_GPU"] = "1"
 
 # Create an instance of the FastAPI application
 app = FastAPI()
@@ -26,6 +29,7 @@ async def analyze_name(name: Optional[str] = None):
     """
     Endpoint to analyze a name and return a JSON with likely country origins (ISO codes) with confidence scores.
     Accepts a query parameter 'name'.
+    Uses GPU acceleration for faster inference.
     """
 
     # Validate that the name is provided and non-empty
@@ -48,10 +52,8 @@ async def analyze_name(name: Optional[str] = None):
             alpha3 = json.load(file)
 
     try:
-
-    # Send the conversation prompt to the AI model
-    # This prompt instructs the model how to analyze the name and format the JSON response.
-
+        # Send the conversation prompt to the AI model
+        # This prompt instructs the model how to analyze the name and format the JSON response.
         response = client.chat.completions.create(
             model="qwen2.5:7b",
             messages=[
@@ -192,4 +194,3 @@ async def analyze_name(name: Optional[str] = None):
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
-
