@@ -1,21 +1,41 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.exceptions import HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 import instructor
 from openai import OpenAI
 import json 
 import os
+import subprocess
+import sys
+import requests
+import time
 
 # Set environment variable for GPU usage
-os.environ["OLLAMA_USE_GPU"] = "1"
+os.environ.update({
+    "OLLAMA_USE_GPU": "1",
+    "OLLAMA_GPU_LAYERS": "1000"
+})
 
 # Create an instance of the FastAPI application
-app = FastAPI()
+app = FastAPI(
+    title="Name Origin Analysis API",
+    description="API for analyzing name origins using GPU-accelerated LLM inference",
+    version="1.0.0"
+)
 
-# Create an instance of an OpenAI client using a local endpoint (or whichever endpoint is specified).
-# `instructor.from_openai` creates an 'instructor' client wrapping this OpenAI client.
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Create an instance of an OpenAI client using a local endpoint
 client = instructor.from_openai(
     OpenAI(
         base_url="http://localhost:11434/v1",
@@ -24,13 +44,112 @@ client = instructor.from_openai(
     mode=instructor.Mode.JSON,
 )
 
+# Background task to monitor GPU usage during inference
+def monitor_gpu_during_inference():
+    """Monitor GPU usage during inference and log results"""
+    try:
+        # Initial GPU state
+        initial = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True
+        ).stdout.strip()
+        
+        # Wait a bit during inference
+        time.sleep(1)
+        
+        # Check GPU during inference
+        during = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True
+        ).stdout.strip()
+        
+        # Log the results
+        print(f"GPU MONITORING - Initial: {initial} | During inference: {during}", flush=True)
+    except Exception as e:
+        print(f"GPU monitoring error: {str(e)}", flush=True)
+
+@app.get("/gpu_status")
+async def check_gpu_status() -> Dict[str, Any]:
+    """
+    Endpoint to check the GPU status and verify if the application is using GPU acceleration.
+    Returns information about GPU usage, Ollama configuration, and system details.
+    """
+    status_info = {
+        "gpu_enabled": os.environ.get("OLLAMA_USE_GPU") == "1",
+        "gpu_layers": os.environ.get("OLLAMA_GPU_LAYERS=1000", "Not set"),
+        "cuda_devices": os.environ.get("CUDA_VISIBLE_DEVICES", "Not specified"),
+        "ollama_status": "Unknown",
+        "gpu_stats": None,
+        "system_info": {},
+    }
+    
+    # Check if Ollama is running and using GPU
+    try:
+        # Test if Ollama API is accessible
+        response = requests.get("http://localhost:11434/api/info")
+        if response.status_code == 200:
+            status_info["ollama_status"] = "Running"
+            # Look for GPU indicators in the response
+            if "gpu" in response.text.lower():
+                status_info["ollama_status"] = "Running with GPU support"
+            status_info["ollama_info"] = response.json()
+    except Exception as e:
+        status_info["ollama_status"] = f"Error: {str(e)}"
+    
+    # Try to get GPU stats using nvidia-smi
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,name", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True
+        )
+        if result.stdout:
+            gpu_stats = []
+            for i, line in enumerate(result.stdout.strip().split('\n')):
+                values = [x.strip() for x in line.split(',')]
+                if len(values) == 4:  # Make sure we have all 4 values
+                    util, mem_used, mem_total, name = values
+                    gpu_stats.append({
+                        "gpu_id": i,
+                        "name": name,
+                        "utilization": util,
+                        "memory_used": mem_used,
+                        "memory_total": mem_total
+                    })
+            status_info["gpu_stats"] = gpu_stats
+    except subprocess.CalledProcessError:
+        status_info["gpu_stats"] = "nvidia-smi command failed"
+    except FileNotFoundError:
+        status_info["gpu_stats"] = "nvidia-smi not found, GPU might not be available"
+    
+    # Get Python and system info
+    status_info["system_info"] = {
+        "python_version": sys.version,
+        "os_info": os.uname() if hasattr(os, 'uname') else "N/A"
+    }
+    
+    # Check Ollama model status
+    try:
+        result = subprocess.run(
+            ["ollama", "ps"],
+            capture_output=True, text=True, check=True
+        )
+        if result.stdout:
+            status_info["ollama_models"] = result.stdout
+    except Exception as e:
+        status_info["ollama_models"] = f"Error getting model info: {str(e)}"
+    
+    return status_info
+
 @app.get("/name_analyzer")
-async def analyze_name(name: Optional[str] = None):
+async def analyze_name(name: Optional[str] = None, background_tasks: BackgroundTasks = None):
     """
     Endpoint to analyze a name and return a JSON with likely country origins (ISO codes) with confidence scores.
     Accepts a query parameter 'name'.
     Uses GPU acceleration for faster inference.
     """
+    # Start GPU monitoring in background
+    if background_tasks:
+        background_tasks.add_task(monitor_gpu_during_inference)
 
     # Validate that the name is provided and non-empty
     if not name or not name.strip():
@@ -52,6 +171,12 @@ async def analyze_name(name: Optional[str] = None):
             alpha3 = json.load(file)
 
     try:
+        # Force GPU usage for this request
+        os.environ["OLLAMA_USE_GPU"] = "1"
+        
+        # Start time for performance measurement
+        start_time = time.time()
+
         # Send the conversation prompt to the AI model
         # This prompt instructs the model how to analyze the name and format the JSON response.
         response = client.chat.completions.create(
@@ -135,6 +260,10 @@ async def analyze_name(name: Optional[str] = None):
             temperature=0.1, # Lower temperature to return a more deterministic response with less hallucinations
         )
 
+        # Calculate processing time
+        process_time = time.time() - start_time
+        print(f"Name analysis completed in {process_time:.2f} seconds", flush=True)
+
         # Log the raw response
         raw_content = response.choices[0].message.content
         print(f"Raw response from AI: {raw_content}", flush=True)
@@ -166,7 +295,9 @@ async def analyze_name(name: Optional[str] = None):
 
         # Update the AI response with the filtered and padded origins
         response_data["likely_origins"] = filtered_origins[:max_origins]
-
+        
+        # Add processing time to response
+        response_data["processing_time_seconds"] = process_time
 
         # Ensure each entry in 'likely_origins' is valid
         for origin in response_data["likely_origins"]:
@@ -194,3 +325,40 @@ async def analyze_name(name: Optional[str] = None):
             status_code=500,
             detail=f"Internal server error: {str(e)}"
         )
+
+# Add an endpoint to force reload the model with GPU
+@app.get("/reload_model")
+async def reload_model_with_gpu():
+    """Force reload the model with GPU settings"""
+    try:
+        # Kill existing Ollama process
+        subprocess.run(["pkill", "ollama"], check=False)
+        time.sleep(2)
+        
+        # Start Ollama with GPU
+        subprocess.Popen(["ollama", "serve"], env={**os.environ, "OLLAMA_USE_GPU": "1", "OLLAMA_GPU_LAYERS": "1000"})
+        time.sleep(5)
+        
+        # Pull model with GPU
+        result = subprocess.run(
+            ["ollama", "pull", "qwen2.5:7b"], 
+            env={**os.environ, "OLLAMA_USE_GPU": "1"}, 
+            capture_output=True, 
+            text=True
+        )
+        
+        # Check model status
+        status = subprocess.run(["ollama", "ps"], capture_output=True, text=True).stdout
+        
+        return {
+            "reload_status": "success",
+            "model_status": status,
+            "gpu_enabled": os.environ.get("OLLAMA_USE_GPU") == "1",
+            "gpu_layers": os.environ.get("OLLAMA_GPU_LAYERS", "Not set"),
+            "pull_result": result.stdout
+        }
+    except Exception as e:
+        return {
+            "reload_status": "error",
+            "message": str(e)
+        }

@@ -1,0 +1,5 @@
+{
+    "gpu": true,
+    "gpu_layers": 1000,
+    "compute": "cuda"
+  }

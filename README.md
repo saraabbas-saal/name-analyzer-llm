@@ -31,14 +31,9 @@ This repository contains a FastAPI-based service that analyzes a given name and 
    sudo systemctl restart docker
    ```
 
-## Build the Docker Image
+## Build & Run the Docker Image
 ```bash
-docker build -t name_analyzer_gpu:latest .
-```
-
-## Run the service with GPU
-```bash
-docker run --gpus all -it -p 8071:8071 name_analyzer_gpu:latest
+run.sh
 ```
 
 ## Send a request

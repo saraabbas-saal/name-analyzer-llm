@@ -1,61 +1,105 @@
 #!/bin/bash
+
 # ------------------------
-# This script launches:
-# 1. The Ollama LLM server with GPU support
-# 2. A specific model (qwen2.5:7b) with GPU acceleration
-# 3. A FastAPI/uvicorn application
+# GPU-accelerated startup script for name analyzer service
+# This script:
+# 1. Verifies GPU availability
+# 2. Starts Ollama with GPU support
+# 3. Loads the LLM model with GPU acceleration
+# 4. Launches the FastAPI application
 # ------------------------
 
-# Set environment variable to enable GPU usage
+# Display GPU information
+echo "========== GPU VERIFICATION =========="
+nvidia-smi || echo "WARNING: nvidia-smi failed. GPU might not be properly accessible!"
+
+# List NVIDIA devices
+echo "Checking NVIDIA device access:"
+ls -la /dev/nvidia* || echo "WARNING: No NVIDIA devices found! Container might not have GPU access."
+
+# Check CUDA libraries
+echo "Checking CUDA libraries:"
+ldconfig -p | grep -i cuda | head -5
+
+# Ensure GPU settings are active
 export OLLAMA_USE_GPU=1
+export OLLAMA_GPU_LAYERS=1000
+export CUDA_VISIBLE_DEVICES=0
 
-# Use CUDA_VISIBLE_DEVICES passed from docker run, or default to all GPUs if not specified
-if [ -z "$CUDA_VISIBLE_DEVICES" ]; then
-    echo "No specific GPU selected, using all available GPUs"
-else
-    echo "Using GPU(s): $CUDA_VISIBLE_DEVICES"
-fi
+echo "Environment variables set:"
+env | grep -E "OLLAMA|CUDA|NVIDIA" | sort
 
-# Check if nvidia-smi is available and display GPU info
-if command -v nvidia-smi &> /dev/null; then
-    echo "GPU information:"
-    nvidia-smi
-else
-    echo "WARNING: nvidia-smi command not found. This might indicate that the GPU is not properly configured."
-    echo "Make sure you're running with --gpus flag and NVIDIA drivers are properly installed."
-fi
+# Kill any existing Ollama process
+echo "Stopping any existing Ollama processes:"
+pkill ollama || echo "No Ollama processes found to kill."
+sleep 2
 
+# Start Ollama server with GPU support
+echo "========== STARTING OLLAMA WITH GPU =========="
 echo "Starting Ollama server with GPU support..."
-# 1. Start the Ollama server in the background with GPU support
 ollama serve &
 OLLAMA_PID=$!
 
-# Wait for Ollama server to start
+# Wait for Ollama to initialize
 echo "Waiting for Ollama server to initialize..."
 sleep 5
 
-# Add a verification step to check if Ollama is using GPU
-echo "Checking Ollama GPU utilization..."
-curl -s http://localhost:11434/api/tags | grep -i gpu || echo "WARNING: GPU may not be detected by Ollama"
+# Verify Ollama API is responding
+echo "Checking Ollama API:"
+curl -s http://localhost:11434/api/info || echo "WARNING: Ollama API not responding!"
 
-# 2. Run the 'qwen2.5:7b' model with GPU acceleration
-echo "Loading qwen2.5:7b model with GPU acceleration..."
-ollama run qwen2.5:7b &
-MODEL_PID=$!
+# Pull the model with explicit GPU settings
+echo "========== LOADING MODEL WITH GPU =========="
+echo "Pulling qwen2.5:7b model with GPU acceleration..."
+OLLAMA_USE_GPU=1 ollama pull qwen2.5:7b
 
-# 3. Wait for model to initialize
-echo "Waiting for model to initialize..."
-sleep 5
+# Verify model status
+echo "Checking model status:"
+ollama ps
 
-# Check GPU utilization
-echo "GPU utilization after loading model:"
-if command -v nvidia-smi &> /dev/null; then
-    nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv
+# If model shows "100% CPU", try to force GPU usage
+if ollama ps | grep -q "100% CPU"; then
+    echo "WARNING: Model still using CPU! Attempting to force GPU usage..."
+    
+    # Try alternative approach
+    pkill ollama
+    sleep 2
+    
+    # Create Ollama config directory if it doesn't exist
+    # mkdir -p ~/.ollama
+    
+    # # Create/update Ollama configuration
+    # echo '{
+    #   "gpu": true,
+    #   "gpu_layers": 100
+    # }' > ~/.ollama/config.json
+    
+    # Restart Ollama with explicit config
+    OLLAMA_USE_GPU=1 ollama serve &
+    OLLAMA_PID=$!
+    sleep 5
+    
+    # Force model reload
+    OLLAMA_USE_GPU=1 ollama pull qwen2.5:7b
+    
+    # Check again
+    echo "Checking model status after forcing GPU:"
+    ollama ps
 fi
 
-# 4. Launch the FastAPI application using uvicorn
-echo "Starting FastAPI application..."
+# Run a quick test to see if GPU is utilized
+echo "Running quick test to verify GPU utilization..."
+echo "Testing GPU acceleration" | OLLAMA_USE_GPU=1 ollama run qwen2.5:7b
+
+# Check GPU utilization after test
+echo "GPU utilization after test:"
+nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv
+
+# Start the FastAPI application
+echo "========== STARTING FASTAPI APPLICATION =========="
+echo "Starting FastAPI application on port 8071..."
 uvicorn app:app --host 0.0.0.0 --port 8071
 
-# Handle shutdown gracefully
-trap "kill $OLLAMA_PID $MODEL_PID" EXIT
+# Cleanup on exit
+trap "kill $OLLAMA_PID" EXIT
+
