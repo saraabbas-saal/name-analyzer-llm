@@ -183,8 +183,8 @@ async def analyze_name(name: Optional[str] = None, background_tasks: BackgroundT
             model="qwen2.5:7b",
             messages=[
                 {
-                    "role": "user",
-                    "content": f"""Analyze the following full name: "{name}"
+                    "role": "system",
+                    "content": f"""You are a name origin analyzer. Your task is to analyze names and predict likely countries of origin.
 
     Consider the following factors:
     - Historical migration patterns
@@ -253,7 +253,11 @@ async def analyze_name(name: Optional[str] = None, background_tasks: BackgroundT
     - Ensure all alpha-3 codes in the output match exactly with those provided in the dictionary.
 
                         
-    """ }
+    """ },
+    {
+        "role":"user",
+        "content": f"Analyze this name: {name}"
+    }
             ],
             response_model=None,
             seed=42, # Setting the seed for reproducing the same output per query
